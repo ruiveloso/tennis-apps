@@ -3715,6 +3715,26 @@ function tempoLeitura(texto) {
 
 const sinteseVoz = typeof speechSynthesis !== 'undefined' ? speechSynthesis : null;
 let vozToken = 0;
+// a frase em curso fica guardada: o Safari pode descartá-la a meio e nunca chamar onend
+let fraseAtual = null, fraseSilencio = null;
+
+/**
+ * iPhone/iPad: o Safari só deixa falar se o primeiro speak() acontecer dentro de um toque.
+ * Chama-se nos toques enquanto a voz está ligada; diz um silêncio uma única vez.
+ */
+function desbloquearVoz() {
+  if (!sinteseVoz || fraseSilencio || typeof SpeechSynthesisUtterance === 'undefined') return;
+  fraseSilencio = new SpeechSynthesisUtterance(' ');
+  fraseSilencio.volume = 0;
+  fraseAtual = fraseSilencio;
+  if (sinteseVoz.paused) sinteseVoz.resume();
+  sinteseVoz.speak(fraseSilencio);
+}
+
+/** A lista de vozes ainda não chegou (no iPhone pode demorar)? */
+function vozesPorCarregar() {
+  return !!sinteseVoz && !sinteseVoz.getVoices().length;
+}
 
 /**
  * Escolhe a voz. Português usa só vozes pt-PT (nunca pt-BR nem inglês);
@@ -3763,12 +3783,16 @@ function falar(texto, aoTerminar) {
   frase.rate = 0.95;
   const token = ++vozToken;
   frase.onend = frase.onerror = () => { if (token === vozToken && aoTerminar) aoTerminar(); };
+  fraseAtual = frase;
+  if (sinteseVoz.paused) sinteseVoz.resume();
   sinteseVoz.speak(frase);
   return true;
 }
 
 function calarVoz() {
   vozToken++;
+  // o silêncio de desbloqueio não se cancela: no Safari, speak() logo a seguir a cancel() pode perder-se
+  if (fraseAtual === fraseSilencio) return;
   if (sinteseVoz && (sinteseVoz.speaking || sinteseVoz.pending)) sinteseVoz.cancel();
 }
 
@@ -4027,6 +4051,10 @@ document.getElementById('chkLicao').addEventListener('change', e => definirModoL
 if (sinteseVoz && sinteseVoz.addEventListener) {
   // as vozes chegam de forma assíncrona: se a voz estava ligada e ainda não há nenhuma, esperamos por elas
   sinteseVoz.addEventListener('voiceschanged', () => atualizarBotaoVoz());
+}
+// iPhone/iPad: com a voz ligada (também a guardada de outra visita), o primeiro toque desbloqueia-a
+for (const tipo of ['touchend', 'click']) {
+  document.addEventListener(tipo, () => { if (vozLigada) desbloquearVoz(); }, true);
 }
 document.getElementById('btnResetCamera').addEventListener('click', () => {
   if (targetPress) finishDrag({ pointerId: targetPress.id });
@@ -4933,11 +4961,14 @@ function definirModoLicao(ligado) {
 }
 
 function definirVoz(ligada) {
-  if (ligada && !vozParaIdioma()) {
+  if (ligada) desbloquearVoz();   // ainda dentro do toque no botão Voz
+  // sem lista de vozes ainda (iPhone), liga-se e confirma-se daqui a pouco
+  if (ligada && !vozParaIdioma() && !vozesPorCarregar()) {
     vozLigada = false;
     mostrarAvisoVoz();
   } else {
     vozLigada = !!ligada;
+    if (vozLigada && !vozParaIdioma()) setTimeout(confirmarVoz, 2500);
     if (vozLigada && !modoLicao) definirModoLicao(true);
     if (!vozLigada) calarVoz();
     if (vozLigada && rally && rally.aguarda) iniciarFala(rally.falas.indexOf(rally.aguarda), performance.now());
@@ -4949,6 +4980,15 @@ function definirVoz(ligada) {
 function mostrarAvisoVoz() {
   avisoVozAte = performance.now() + 5000;
   atualizarLegenda();
+}
+
+/** As vozes já chegaram: se continua sem voz adequada, desliga e avisa. */
+function confirmarVoz() {
+  if (!vozLigada || vozParaIdioma()) return;
+  vozLigada = false;
+  try { localStorage.setItem('tenisVoz', '0'); } catch (erro) { /* sem armazenamento */ }
+  atualizarBotaoVoz();
+  mostrarAvisoVoz();
 }
 
 function atualizarBotaoVoz() {
